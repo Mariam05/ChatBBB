@@ -20,17 +20,6 @@ def main():
 	RECORD_SECONDS = 3 # How many seconds we want to record audio for before we send it off for transcription. every 20s we'll generate a transcript
 	AUDIO_FORMAT = pyaudio.paInt16
 
-	def start_threads():
-		print('starting recording...')
-
-		# thread that will record microphone
-		record = Thread(target=record_microphone) 
-		record.start()
-
-		# thread that will start transcribing
-		transcribe = Thread(target=speech_recognition)
-		transcribe.start()
-
 	def record_microphone(chunk=1024): # chunk is how often we are going to read audio from the microphone (how many audio frames).
 		p = pyaudio.PyAudio()
 
@@ -38,13 +27,12 @@ def main():
                     channels=CHANNELS,
                     rate=FRAME_RATE,
                     input=True,
-                    # input_device_index=5,
                     frames_per_buffer=chunk)
                     
 		frames = [] # will store all the audio recorded from the microphone
 
-		while True:
-			try:
+		try:
+			while True:
 				data = stream.read(chunk)
 				frames.append(data)
 
@@ -52,38 +40,55 @@ def main():
 				if len(frames) >= (FRAME_RATE * RECORD_SECONDS) / chunk: 
 						recordings.put(frames.copy())
 						frames = []
-			except KeyboardInterrupt:
-				stream.stop_stream()
-				stream.close()
-				p.terminate()
-				break
+		except KeyboardInterrupt:
+			pass
+		finally:
+			print("Closing stream")
+			stream.stop_stream()
+			stream.close()
+			p.terminate()
 
 	model = Model(model_name="vosk-model-en-us-0.22")
 	rec = KaldiRecognizer(model, FRAME_RATE) # responsible for managing the audio transcription 
 	rec.SetWords(True) # will give us confidence levels for each individual word
 
 	def speech_recognition():
-		while True:
-			try:
+		try:
+			while True:
 				frames = recordings.get()
 				raw_audio_data = b''.join(frames)
 
-				rec.AcceptWaveform(raw_audio_data) # join all chunks together into one binary string
-				result = rec.Result()
-				text = json.loads(result)["text"]
+				if rec.AcceptWaveform(raw_audio_data): # join all chunks together into one binary string
+					result = rec.Result()
+					text = json.loads(result)["text"]
+					print(text)
 
-				print(text)
+					# write to file
+					with open(TRANSCRIPT_FILENAME, "a") as f:
+						f.write(text)
 
-				# write to file
-				f = open(TRANSCRIPT_FILENAME,"a")
-				f.write(text)
-				f.close()
-			except KeyboardInterrupt:
-				break
+		except KeyboardInterrupt:
+			pass
 
+	def start_threads():
+		print('Starting recording...')
 
-	start_threads()
+		record_thread = Thread(target=record_microphone)
+		record_thread.daemon = True
+		record_thread.start()
 
+		transcribe_thread = Thread(target=speech_recognition)
+		transcribe_thread.daemon = True
+		transcribe_thread.start()
+
+		record_thread.join()
+		transcribe_thread.join()
+
+	try:
+			start_threads()
+	except KeyboardInterrupt:
+			print("Program interrupted by user. Exiting...")
+			exit(1)
 
 if __name__ == "__main__":
     main()
